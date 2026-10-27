@@ -194,6 +194,122 @@ namespace BroMakerLib.HarmonyPatches
         }
     }
 
+    [HarmonyPatch(typeof(TestVanDammeAnim), "RecallBro")]
+    static class TestVanDammeAnim_RecallBro_Patch
+    {
+        static void Postfix(ref bool ___ElgilbleToBeKicked)
+        {
+            // Recalled remote heroes keep updating with playerNum=5 until they fade out.
+            // Their playerBubble is null, so they must no longer be kick candidates.
+            ___ElgilbleToBeKicked = false;
+        }
+    }
+
+    [HarmonyPatch(typeof(InstantiationController), "InstantiateRPC")]
+    static class InstantiationController_InstantiateRPC_Patch
+    {
+        private struct CustomSpawnState
+        {
+            public bool isCustomBro;
+            public bool activateInstance;
+            public CustomBroInfo previousInfo;
+            public int previousPlayerNum;
+        }
+
+        static void Prefix(ref int indexOfPrefab, byte[] instantiationDataAsBytes, out CustomSpawnState __state)
+        {
+            __state = new CustomSpawnState();
+            if (instantiationDataAsBytes == null)
+                return;
+
+            object[] instantiationData = TypeSerializer.DeserializeParameterList(instantiationDataAsBytes);
+            if (instantiationData.Length < 2 || !(instantiationData[0] is string) || !(instantiationData[1] is string))
+                return;
+
+            string marker = (string)instantiationData[0];
+            if (marker == LoadHero.NETWORK_PROJECTILE_MARKER)
+            {
+                GameObject projectilePrefab = FindCustomProjectilePrefab((string)instantiationData[1]);
+                if (projectilePrefab == null || !CustomProjectileNetwork.TryRegisterCustomNetworkPrefab(projectilePrefab))
+                    return;
+
+                __state.activateInstance = true;
+                indexOfPrefab = InstantiationController.GetPrefabIndex(projectilePrefab);
+                return;
+            }
+
+            if (marker != LoadHero.NETWORK_PREFAB_MARKER || instantiationData.Length < 3 || !(instantiationData[2] is int))
+                return;
+
+            StoredHero storedHero;
+            string customBroName = (string)instantiationData[1];
+            if (!BroMakerStorage.GetStoredHeroByName(customBroName, out storedHero))
+                return;
+
+            __state.isCustomBro = true;
+            __state.activateInstance = true;
+            __state.previousInfo = LoadHero.currentInfo;
+            __state.previousPlayerNum = LoadHero.playerNum;
+            LoadHero.playerNum = (int)instantiationData[2];
+            LoadHero.currentInfo = storedHero.GetInfo();
+            GameObject prefab = LoadHero.GetOrCreateNetworkPrefab(LoadHero.currentInfo, PresetManager.GetHeroPreset(LoadHero.currentInfo.CharacterPreset));
+            indexOfPrefab = InstantiationController.GetPrefabIndex(prefab);
+        }
+
+        static void Postfix(NID networkID, CustomSpawnState __state)
+        {
+            if (!__state.activateInstance)
+                return;
+
+            GameObject instance = Registry.GetObject(networkID) as GameObject;
+            if (instance != null)
+            {
+                instance.SetActive(true);
+                Projectile projectile = instance.GetComponent<Projectile>();
+                if (projectile != null)
+                    projectile.enabled = true;
+            }
+        }
+
+        static Exception Finalizer(Exception __exception, CustomSpawnState __state)
+        {
+            if (__state.isCustomBro)
+            {
+                LoadHero.currentInfo = __state.previousInfo;
+                LoadHero.playerNum = __state.previousPlayerNum;
+            }
+            return __exception;
+        }
+
+        private static GameObject FindCustomProjectilePrefab(string typeName)
+        {
+            foreach (KeyValuePair<Type, CustomProjectile> entry in CustomProjectile.CustomProjectilePrefabs)
+            {
+                if (MatchesTypeName(entry.Key, typeName))
+                    return entry.Value != null ? entry.Value.gameObject : null;
+            }
+
+            foreach (KeyValuePair<Type, CustomGrenade> entry in CustomGrenade.CustomGrenadePrefabs)
+            {
+                if (MatchesTypeName(entry.Key, typeName))
+                    return entry.Value != null ? entry.Value.gameObject : null;
+            }
+
+            foreach (KeyValuePair<Type, CustomSachelPack> entry in CustomSachelPack.CustomSachelPackPrefabs)
+            {
+                if (MatchesTypeName(entry.Key, typeName))
+                    return entry.Value != null ? entry.Value.gameObject : null;
+            }
+
+            return null;
+        }
+
+        private static bool MatchesTypeName(Type type, string typeName)
+        {
+            return type != null && (type.AssemblyQualifiedName == typeName || type.FullName == typeName || type.Name == typeName);
+        }
+    }
+
     // Fix vanilla bro being visible for 1 frame in certain spawning situations
     [HarmonyPatch(typeof(Player), "InstantiateHero")]
     static class Player_InstantiateHero_Patch
@@ -623,6 +739,25 @@ namespace BroMakerLib.HarmonyPatches
         }
     }
 
+    // Apply the custom avatar after the vanilla hero setup has selected the base hero avatar.
+    [HarmonyPatch(typeof(TestVanDammeAnim), "SetUpHero", new Type[] { typeof(int), typeof(HeroType), typeof(bool) })]
+    static class TestVanDammeAnim_SetUpHero_Patch
+    {
+        public static void Postfix(TestVanDammeAnim __instance, int PlayerNum)
+        {
+            if (!Main.enabled || !(__instance is ICustomHero))
+            {
+                return;
+            }
+
+            ICustomHero customHero = __instance as ICustomHero;
+            if (customHero.CurrentFirstAvatar != null)
+            {
+                HeroController.SetAvatarMaterial(PlayerNum, customHero.CurrentFirstAvatar);
+            }
+        }
+    }
+
     // Fix custom bros having wrong sprite show up on death screen
     [HarmonyPatch(typeof(GameModeController), "Start")]
     static class GameModeController_Start_Patch
@@ -730,44 +865,145 @@ namespace BroMakerLib.HarmonyPatches
         }
     }
 
-    // Fix grenades thrown by custom bros not having trails setup correctly
+    // Keep custom grenades networked while giving remote peers the matching prefab.
     [HarmonyPatch(typeof(ProjectileController), "SpawnGrenadeOverNetwork")]
     static class ProjectileController_SpawnGrenadeOverNetwork_Patch
     {
         public static bool Prefix(ref Grenade grenadePrefab, ref MonoBehaviour firedBy, ref float x, ref float y, ref float radius, ref float force, ref float xI, ref float yI, ref int playerNum, ref float lifeM, ref Grenade __result)
         {
-            if (!Main.enabled || !(firedBy is ICustomHero))
+            if (!Main.enabled || !(firedBy is ICustomHero) || !(grenadePrefab is ICustomProjectile))
             {
                 return true;
             }
 
-            __result = ProjectileController.SpawnGrenadeLocally(grenadePrefab, firedBy, x, y, radius, force, xI, yI, playerNum, UnityEngine.Random.Range(0, 10000));
+            if (Connect.IsOffline || !CustomProjectileNetwork.TryRegisterCustomNetworkPrefab(grenadePrefab.gameObject))
+            {
+                __result = ProjectileController.SpawnGrenadeLocally(grenadePrefab, firedBy, x, y, radius, force, xI, yI,
+                    playerNum, UnityEngine.Random.Range(0, 10000));
+                if (__result != null && lifeM < 1f)
+                    __result.ReduceLife(lifeM);
+                return false;
+            }
+
+            object[] instantiationData = CustomProjectileNetwork.CreateCustomProjectileInstantiationData(grenadePrefab);
+            if (instantiationData == null)
+            {
+                __result = ProjectileController.SpawnGrenadeLocally(grenadePrefab, firedBy, x, y, radius, force, xI, yI,
+                    playerNum, UnityEngine.Random.Range(0, 10000));
+                if (__result != null && lifeM < 1f)
+                    __result.ReduceLife(lifeM);
+                return false;
+            }
+
+            GameObject gameObject = Networking.Networking.Instantiate<GameObject>(grenadePrefab.gameObject,
+                new Vector3(x, y, 0f), Quaternion.identity, instantiationData, false);
+            if (gameObject == null)
+                return true;
+
+            gameObject.SetActive(true);
+            __result = gameObject.GetComponent<Grenade>();
+            if (__result == null)
+                return true;
+            __result.enabled = true;
+
+            int seed = UnityEngine.Random.Range(0, 10000);
+            Networking.Networking.RPC<int, int, MonoBehaviour>(PID.TargetAll,
+                new RpcSignature<int, int, MonoBehaviour>(__result.SetupGrenade), seed, playerNum, firedBy, false);
+            Networking.Networking.RPC<float, float, float, float>(PID.TargetAll,
+                new RpcSignature<float, float, float, float>(__result.Launch), x, y, xI, yI, false);
             if (lifeM < 1f)
             {
-                __result.ReduceLife(lifeM);
+                Networking.Networking.RPC<float>(PID.TargetAll,
+                    new RpcSignature<float>(__result.ReduceLife), lifeM, false);
             }
+            Networking.Networking.RPC<PID>(PID.TargetAll,
+                new RpcSignature<PID>(__result.NetworkSetup), PID.MyID, false);
             return false;
         }
     }
 
-    // Fix airstrike projectiles not working when airstrike grenade is spawned locally
+    // Keep custom projectiles networked while giving remote peers the matching prefab.
     [HarmonyPatch(typeof(ProjectileController), "SpawnProjectileOverNetwork")]
     static class ProjectileController_SpawnProjectileOverNetwork_Patch
     {
         public static bool Prefix(ref Projectile prefab, ref MonoBehaviour FiredBy, ref float x, ref float y, ref float xI, ref float yI, ref bool synced, ref int playerNum, ref bool AddTemporaryPlayerTarget, ref bool executeImmediately, ref float _zOffset, ref Projectile __result)
         {
-            if (!Main.enabled || !(FiredBy is ICustomHero))
+            if (!Main.enabled || !(FiredBy is ICustomHero) || !(prefab is ICustomProjectile))
             {
                 return true;
             }
 
-            __result = ProjectileController.SpawnProjectileLocally(prefab, FiredBy, x, y, xI, yI, playerNum, AddTemporaryPlayerTarget, _zOffset);
-            __result.SetSeed(UnityEngine.Random.Range(-10000, 10000));
+            if (Connect.IsOffline || !CustomProjectileNetwork.TryRegisterCustomNetworkPrefab(prefab.gameObject))
+            {
+                __result = ProjectileController.SpawnProjectileLocally(prefab, FiredBy, x, y, xI, yI,
+                    playerNum, AddTemporaryPlayerTarget, _zOffset);
+                if (__result != null)
+                    __result.SetSeed(UnityEngine.Random.Range(-10000, 10000));
+                return false;
+            }
+
+            object[] instantiationData = CustomProjectileNetwork.CreateCustomProjectileInstantiationData(prefab);
+            if (instantiationData == null)
+            {
+                __result = ProjectileController.SpawnProjectileLocally(prefab, FiredBy, x, y, xI, yI,
+                    playerNum, AddTemporaryPlayerTarget, _zOffset);
+                if (__result != null)
+                    __result.SetSeed(UnityEngine.Random.Range(-10000, 10000));
+                return false;
+            }
+
+            GameObject gameObject = Networking.Networking.Instantiate<GameObject>(prefab.gameObject,
+                instantiationData, executeImmediately);
+            if (gameObject == null)
+                return true;
+
+            gameObject.SetActive(true);
+            __result = gameObject.GetComponent<Projectile>();
+            if (__result == null)
+                return true;
+            __result.enabled = true;
+
+            Networking.Networking.RPC<float, float, float, float, float, int, MonoBehaviour>(PID.TargetAll,
+                new RpcSignature<float, float, float, float, float, int, MonoBehaviour>(__result.Fire),
+                x, y, xI, yI, _zOffset, playerNum, FiredBy, executeImmediately);
+            Networking.Networking.RPC<int>(PID.TargetAll,
+                new RpcSignature<int>(__result.SetSeed), UnityEngine.Random.Range(-10000, 10000), executeImmediately);
+            if (synced)
+            {
+                __result.EnableSyncing(true, executeImmediately);
+            }
             if (AddTemporaryPlayerTarget)
             {
-                HeroController.AddTemporaryPlayerTarget(playerNum, __result.transform);
+                Networking.Networking.RPC<int, Transform>(PID.TargetAll,
+                    new RpcSignature<int, Transform>(HeroController.AddTemporaryPlayerTarget), playerNum, __result.transform, executeImmediately);
             }
             return false;
+        }
+    }
+
+    static class CustomProjectileNetwork
+    {
+        public static object[] CreateCustomProjectileInstantiationData(UnityEngine.Object prefab)
+        {
+            if (!(prefab is ICustomProjectile))
+                return null;
+
+            Type type = prefab.GetType();
+            if (type == null)
+                return null;
+
+            return new object[] { LoadHero.NETWORK_PROJECTILE_MARKER, type.AssemblyQualifiedName };
+        }
+
+        public static bool TryRegisterCustomNetworkPrefab(GameObject prefab)
+        {
+            if (prefab == null || InstantiationController.PrefabList == null)
+                return false;
+
+            if (!InstantiationController.PrefabList.Contains(prefab))
+                InstantiationController.PrefabList.Add(prefab);
+
+            return InstantiationController.GetPrefabIndex(prefab) >= 0;
         }
     }
 
@@ -785,6 +1021,7 @@ namespace BroMakerLib.HarmonyPatches
             GameObject gameObject = UnityEngine.Object.Instantiate<GameObject>(grenadePrefab.gameObject);
             gameObject.SetActive(true);
             __result = gameObject.GetComponent<Grenade>();
+            __result.enabled = true;
             __result.SetupGrenade(seed, playerNum, firedBy);
             __result.Launch(x, y, xI, yI);
             __result.NetworkSetup(PID.MyID);
@@ -805,6 +1042,7 @@ namespace BroMakerLib.HarmonyPatches
 
             __result = UnityEngine.Object.Instantiate<Projectile>(projectilePrefab, new Vector3(x, y, 0f), Quaternion.identity);
             __result.gameObject.SetActive(true);
+            __result.enabled = true;
             __result.Fire(x, y, xI, yI, 0f, playerNum, FiredBy);
             return false;
         }
@@ -823,6 +1061,7 @@ namespace BroMakerLib.HarmonyPatches
 
             __result = UnityEngine.Object.Instantiate<Projectile>(prefab, new Vector3(x, y, 0f), Quaternion.identity);
             __result.gameObject.SetActive(true);
+            __result.enabled = true;
             __result.Fire(x, y, xI, yI, _zOffset, playerNum, FiredBy);
             return false;
         }
@@ -841,6 +1080,7 @@ namespace BroMakerLib.HarmonyPatches
 
             __result = UnityEngine.Object.Instantiate(prefab, new Vector3(x, y, 0f), Quaternion.identity);
             __result.gameObject.SetActive(true);
+            __result.enabled = true;
             __result.Fire(x, y, xI, yI, _zOffset, playerNum, FiredBy);
             return false;
         }

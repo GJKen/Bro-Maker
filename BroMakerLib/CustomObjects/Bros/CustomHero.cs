@@ -34,8 +34,8 @@ namespace BroMakerLib.CustomObjects.Bros
             ChevBroliosDrowsy
         }
 
-        [Syncronize] public CustomBroInfo Info { get; set; }
-        [Syncronize] public BroBase Character { get; set; }
+        public CustomBroInfo Info { get; set; }
+        public BroBase Character { get; set; }
         [JsonIgnore] public MuscleTempleFlexEffect FlexEffect { get; set; }
 
         [JsonIgnore] public int CurrentVariant { get; set; }

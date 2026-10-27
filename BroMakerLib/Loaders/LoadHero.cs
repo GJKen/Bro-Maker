@@ -26,6 +26,8 @@ namespace BroMakerLib.Loaders
     public static class LoadHero
     {
         public const string GAMEOBJECT_PREFIX = "BM_";
+        internal const string NETWORK_PREFAB_MARKER = "BroMakerLib.CustomHero";
+        internal const string NETWORK_PROJECTILE_MARKER = "BroMakerLib.CustomProjectile";
         public static CustomBroInfo currentInfo;
         public static int playerNum = 0;
 
@@ -101,7 +103,7 @@ namespace BroMakerLib.Loaders
                 }
 
 
-                hero = Net.InstantiateBuffered<GameObject>(original, previousPosition, Quaternion.identity, new object[0], false).GetComponent(type) as TestVanDammeAnim;
+                hero = Net.InstantiateBuffered<GameObject>(original, previousPosition, Quaternion.identity, new object[] { NETWORK_PREFAB_MARKER, customBroInfo.name, selectedPlayerNum }, false).GetComponent(type) as TestVanDammeAnim;
                 hero.gameObject.SetActive(true);
                 BMLogger.Debug($"AfterInstantiation: InstantiateBuffered.");
 
@@ -353,6 +355,16 @@ namespace BroMakerLib.Loaders
                 return attributes[0].As<HeroPresetAttribute>().baseType;
             }
             throw new NotImplementedException($"Type {type} as no attribute of {nameof(HeroPresetAttribute)}");
+        }
+
+        internal static GameObject GetOrCreateNetworkPrefab(CustomBroInfo info, Type type)
+        {
+            int index;
+            if (prefabIndex.TryGetValue(info.name, out index))
+                return InstantiationController.GetPrefabFromIndex(index);
+
+            currentInfo = info;
+            return CreateOriginal(GetBaseHeroTypeOfPreset(type), type);
         }
 
         private static GameObject CreateOriginal(HeroType heroType, Type type)
