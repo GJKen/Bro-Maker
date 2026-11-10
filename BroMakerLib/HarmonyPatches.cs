@@ -40,6 +40,54 @@ namespace BroMakerLib.HarmonyPatches
         }
     }
 
+    [HarmonyPatch(typeof(Player), "RespawnBro")]
+    static class Player_RespawnBro_Manifest_Patch
+    {
+        private static readonly Player[] waitingPlayers = new Player[4];
+        private static readonly float[] waitUntil = new float[4];
+
+        static bool Prefix(Player __instance, bool swappingBro)
+        {
+            if (!Main.enabled || Connect.IsOffline || !__instance.IsMine || !__instance.firstDeployment ||
+                __instance.awaitingHeroTypeFromServer || swappingBro || BroMakerStorage.Bros.Count == 0)
+                return true;
+
+            bool missing = false;
+            foreach (PID peer in RocketLib.Network.ModNegotiation.GetAllPlayers())
+                if (peer != PID.MyID && !RocketLib.Network.ModNegotiation.HasReceivedManifest(peer))
+                {
+                    missing = true;
+                    break;
+                }
+
+            int slot = __instance.playerNum;
+            if (!missing)
+            {
+                if (waitingPlayers[slot] == __instance)
+                {
+                    BMLogger.Log("Initial spawn manifests ready for player " + slot + ".");
+                    waitingPlayers[slot] = null;
+                }
+                return true;
+            }
+            if (waitingPlayers[slot] != __instance)
+            {
+                waitingPlayers[slot] = __instance;
+                waitUntil[slot] = Time.realtimeSinceStartup + 10f;
+                BMLogger.Log("Waiting for peer manifests before initial spawn for player " + slot + ".");
+            }
+            // RunHeroRespawnLogic retries first deployment each frame. Do not consume a hero
+            // request or set awaitingHeroTypeFromServer until the manifest list is known.
+            if (Time.realtimeSinceStartup < waitUntil[slot]) return false;
+            if (!float.IsNegativeInfinity(waitUntil[slot]))
+            {
+                BMLogger.Warning("Initial spawn manifest wait timed out for player " + slot + "; using normal compatibility checks.");
+                waitUntil[slot] = float.NegativeInfinity;
+            }
+            return true;
+        }
+    }
+
     // Automatic spawn
     [HarmonyPatch(typeof(Player), "SpawnHero")]
     static class Player_SpawnHero_Patch
@@ -174,9 +222,7 @@ namespace BroMakerLib.HarmonyPatches
                         LoadHero.spawningCustomBro[__instance.playerNum] = false;
                         LoadHero.anyCustomSpawning = false;
                         LoadHero.broBeingRescued = false;
-                        // InstantiateHero hid the vanilla bro while a replacement was pending.
-                        if (__instance.character != null)
-                            __instance.character.gameObject.SetActive(true);
+                        RestoreVanillaSpawn(__instance);
                         return;
                     }
 
@@ -202,8 +248,7 @@ namespace BroMakerLib.HarmonyPatches
                         LoadHero.spawningCustomBro[__instance.playerNum] = false;
                         LoadHero.anyCustomSpawning = false;
                         LoadHero.broBeingRescued = false;
-                        if (__instance.character != null)
-                            __instance.character.gameObject.SetActive(true);
+                        RestoreVanillaSpawn(__instance);
                         return;
                     }
 
@@ -222,6 +267,24 @@ namespace BroMakerLib.HarmonyPatches
             {
                 BMLogger.ExceptionLog(e);
             }
+        }
+
+        private static void RestoreVanillaSpawn(Player player)
+        {
+            var bro = player.character;
+            if (bro == null) return;
+
+            bro.gameObject.SetActive(true);
+            if (!player.IsMine || LoadHero.previousSpawnInfo[player.playerNum] != Player.SpawnType.AddBroToTransport)
+                return;
+
+            // Replacement suppressed the vanilla transport RPC. Replay that native sequence
+            // after clearing the replacement flags, keeping the same hero on every peer.
+            Networking.Networking.RPC<TestVanDammeAnim>(PID.TargetAll,
+                new RpcSignature<TestVanDammeAnim>(Map.AddBroToHeroTransport), bro, false);
+            Networking.Networking.RPC<TestVanDammeAnim, Player.SpawnType, bool, Vector3>(PID.TargetAll,
+                new RpcSignature<TestVanDammeAnim, Player.SpawnType, bool, Vector3>(player.SetSpawnPositon),
+                bro, Player.SpawnType.AddBroToTransport, false, bro.transform.position, false);
         }
     }
 
