@@ -6,7 +6,7 @@
 
 普通与蓄力攻击的房主发射及网络生成调用成立，但逐帧检查和排除基线 prefab 的复测显示，双端新增对象都是未初始化 clone（位置和速度为 0、`playerNum=-1`、没有 `firedBy`），不是实际飞行投射物。特殊弹药最终状态不一致。水花/固定目标伤害、四个 HUD 图标的逐项切换和加入端拥有 Aquabro 的反向测试仍未完成。
 
-本轮没有修改正式源码、配置或 DLL，没有构建、部署、提交或推送。临时探针已卸载，TestMod 自动清敌开关已恢复，双端游戏已关闭。测试辅助脚本和证据保留于仓库根 `.tmp`。
+本轮没有修改正式源码、配置或 DLL，没有构建、部署、提交或推送。临时探针已卸载，TestMod 自动清敌开关已恢复，双端游戏已关闭。测试辅助脚本和证据原存仓库根 `.tmp`，2026-11-06 已移入 [Aquabro 联机材料归档](../../CustomBro/Aquabro/archive/networking/2026-10/README.md)。
 
 ## 环境与证据
 
@@ -14,8 +14,8 @@
 - Workshop `3715087178`，场景 `Test Evan2`，双端 `playerCount=2`。房主 P0 经 BroMaker `StoredHero -> LoadHero.WithCustomBroInfo` 切换为 Aquabro；加入端本地 P1 为 TankBro。MCP `swap_bro(Aquabro)` 因 Swap Bros Mod 未激活未能使用。
 - 房主截图：[本机联机验收截图](E:/SteamLibrary/steamapps/common/Broforce/r2mod/Broforce/profiles/Broforce/UMM/Mods/alexneargarder-UnityInspectorMod/Screenshots/screenshot_20261027_144650_334f2bef.png)
 - 加入端截图：[5700G 联机验收截图](//5700G/Epan/Games/Broforce%20Mods/Broforce/profiles/Broforce/UMM/Mods/alexneargarder-UnityInspectorMod/Screenshots/screenshot_20261027_144648_bfd33ea4.png)
-- 逐阶段原始摘要（28 条双端 JSONL）：[aquabro-acceptance-raw-summaries-20261027.jsonl](../../.tmp/aquabro-acceptance-raw-summaries-20261027.jsonl)。操作步骤和关键原始输出：[aquabro-acceptance-evidence-20261027.md](../../.tmp/aquabro-acceptance-evidence-20261027.md)。
-- 两端被动探针安装 26 个 Harmony 钩子，并补充投射物/水花逐帧采样；有效采样阶段 `observerErrors=0`。另有一次初始 `execute_code` 动态类型读取触发双端原生访问冲突，原生堆栈不足以确认根因；后续改用反射读取器，不能把该工具故障计为游戏功能结果。诊断见 [aquabro-observer-crash-notes.md](../../.tmp/aquabro-observer-crash-notes.md)。
+- 逐阶段原始摘要（28 条双端 JSONL）：[aquabro-acceptance-raw-summaries-20261027.jsonl](../../CustomBro/Aquabro/archive/networking/2026-10/aquabro-acceptance-raw-summaries-20261027.jsonl)。操作步骤和关键原始输出：[aquabro-acceptance-evidence-20261027.md](../../CustomBro/Aquabro/archive/networking/2026-10/aquabro-acceptance-evidence-20261027.md)。
+- 两端被动探针安装 26 个 Harmony 钩子，并补充投射物/水花逐帧采样；有效采样阶段 `observerErrors=0`。另有一次初始 `execute_code` 动态类型读取触发双端原生访问冲突，原生堆栈不足以确认根因；后续改用反射读取器，不能把该工具故障计为游戏功能结果。诊断见 [aquabro-observer-crash-notes.md](../../CustomBro/Aquabro/archive/networking/2026-10/aquabro-observer-crash-notes.md)。
 - 首轮 CustomMapMultiplayer 最新 `.log` 与 `.trace.log` 均为 0 字节，已实际读取；两端有效 startup 日志中有 BroMaker 的 `Player.SpawnHero` 钩子记录。它们证明模组入口加载，不证明战斗同步通过。
 
 ## 实测结果
